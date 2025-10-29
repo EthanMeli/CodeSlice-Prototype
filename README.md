@@ -1,71 +1,84 @@
-# codeslice README
+# CodeSlice
 
-This is the README for your extension "codeslice". After writing up a brief description, we recommend including the following sections.
+A VS Code extension with a sidebar that lets you quickly "slice" your codebase into:
+- Files: 5 random code files (excludes tests/docs)
+- Tests: 5 random test files
+- Documentation: 5 random documentation files
+Plus a secondary “Slice” webview with a button to run the selection.
 
-## Features
+## Prerequisites
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- Visual Studio Code ≥ 1.105.0
+- Node.js ≥ 18 (recommended 18 or 20)
+- On Windows, run commands in PowerShell
 
-For example if there is an image subfolder under your extension project workspace:
+## Quick start
 
-\!\[feature X\]\(images/feature-x.png\)
+1) Install dependencies
+```powershell
+cd "CodeSlice-Prototype"
+npm install
+```
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+2) Launch the Extension Development Host
+- Press F5 in VS Code (Debug: Start Debugging).
+- This opens a new VS Code window labeled “Extension Development Host”.
 
-## Requirements
+3) Open the CodeSlice view
+- In the Extension Development Host, open the Activity Bar icon “CodeSlice”.
+- You’ll see four views within the CodeSlice container:
+  - Files
+  - Tests
+  - Documentation
+  - Slice (webview with a button)
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+4) Slice your workspace
+- In the “Slice” view, click the “Slice” button.
+- You’ll get an information message showing counts.
+- The “Files”, “Tests”, and “Documentation” trees will populate with up to 5 items each.
+- Click any item to open it in the editor.
 
-## Extension Settings
+Tip: You can also run the command “CodeSlice: Slice Code” from the Command Palette.
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+## Common tasks
 
-For example:
+- Auto-compile TypeScript while developing:
+```powershell
+npm run watch
+```
 
-This extension contributes the following settings:
+- Run tests (optional; uses VS Code’s test runner):
+  - Install the “Extension Test Runner” recommended extension.
+  - Open the Testing panel and run tests, or:
+```powershell
+npm test
+```
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+## How it works (quick overview)
 
-## Known Issues
+- Views
+  - Activity Bar container: “CodeSlice”
+  - Tree views: Files, Tests, Documentation
+  - Webview view: “Slice” (contains the button)
+- On “Slice”:
+  - Scans the workspace (ignoring common folders).
+  - Categorizes files by heuristics:
+    - Docs: README/CHANGELOG/CONTRIBUTING/LICENSE, .md/.mdx/.rst/.adoc/.txt, “docs” folders
+    - Tests: `.test.*`, `.spec.*`, `_test.*`, “__tests__”, “test” or “tests” folders
+    - Files: everything else (code)
+  - Randomly selects up to 5 from each category and updates the three trees.
+  - Clicking any item opens it with the built-in `vscode.open` command.
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+## Project layout
 
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+```
+codeslice/
+  ├─ src/
+  │  ├─ extension.ts          # Extension activation + views + webview + slice logic
+  │  └─ test/extension.test.ts
+  ├─ package.json             # Contribution points, activation events, scripts
+  ├─ tsconfig.json
+  ├─ eslint.config.mjs
+  ├─ media/                   # Icons (place your svg(s) here)
+  └─ .vscode/                 # Launch & tasks configs
+```
