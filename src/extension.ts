@@ -2,6 +2,127 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import * as path from 'path'; // Import path module for selecting files
+import { Buffer } from 'buffer';
+
+// Interface for Jira issue representation
+interface JiraIssue {
+	key: string;
+	summary: string;
+	description: string;
+	issueType: string;
+	status: string;
+	priority: string;
+	url: string;
+}
+
+// Service to interact with Jira REST API
+class JiraService {
+  constructor(private baseUrl: string, private email: string, private apiToken: string) {}
+
+  private get headers() {
+    const auth = Buffer.from(`${this.email}:${this.apiToken}`).toString('base64');
+    return {
+      'Authorization': `Basic ${auth}`,
+      'Accept': 'application/json'
+    };
+  }
+
+  /**
+   * Fetch issues assigned to the current user (paginated).
+   * Uses GET /rest/api/3/search/jql with URL-encoded query params.
+   */
+  async getCurrentUserIssues(maxToReturn: number = 10): Promise<JiraIssue[]> {
+    const accumulated: JiraIssue[] = [];
+    let startAt = 0;
+    const pageSize = Math.min(50, maxToReturn); // Jira allows up to 100; 50 is a safe default
+
+    // Build the static part of our query string
+    const fields = ['summary','description','issuetype','status','priority'];
+    const baseQs = new URLSearchParams({
+      jql: 'assignee = currentUser() ORDER BY updated DESC',
+      fields: fields.join(','),       // comma-separated per docs
+      // you can also add: expand=names if you need field name maps
+    });
+
+    while (accumulated.length < maxToReturn) {
+      const pageQs = new URLSearchParams(baseQs);
+      pageQs.set('startAt', String(startAt));
+      pageQs.set('maxResults', String(Math.min(pageSize, maxToReturn - accumulated.length)));
+
+      const url = `${this.baseUrl.replace(/\/+$/,'')}/rest/api/3/search/jql?${pageQs.toString()}`;
+      const res = await fetch(url, { method: 'GET', headers: this.headers });
+
+      if (!res.ok) {
+        const text = await res.text();
+        // common helpful hint for 401/403/400
+        let hint = '';
+        if (res.status === 401 || res.status === 403) {
+          hint = ' Check your site URL (e.g. https://yourcompany.atlassian.net), email, and API token permissions.';
+        } else if (res.status === 400) {
+          hint = ' The JQL or fields may be invalid for this site.';
+        }
+        throw new Error(`Jira API error: ${res.status} ${res.statusText} - ${text}${hint}`);
+      }
+
+      const data = await res.json() as {
+        issues: any[];
+        startAt: number;
+        maxResults: number;
+        total: number;
+      };
+
+      for (const issue of data.issues) {
+        accumulated.push(this.transformIssue(issue));
+        if (accumulated.length >= maxToReturn) break;
+      }
+
+      // Stop if we've read all issues
+      startAt = (data.startAt ?? startAt) + (data.maxResults ?? pageSize);
+      const total = data.total ?? accumulated.length;
+      if (startAt >= total) break;
+    }
+
+    return accumulated;
+  }
+
+  private transformIssue(issue: any): JiraIssue {
+    const description = this.extractDescription(issue?.fields?.description);
+    const maxLength = 100;
+    const truncated = description.length > maxLength ? description.slice(0, maxLength) + '…' : description;
+
+    return {
+      key: issue.key,
+      summary: issue?.fields?.summary ?? 'No Summary',
+      description: truncated,
+      issueType: issue?.fields?.issuetype?.name ?? 'Unknown',
+      status: issue?.fields?.status?.name ?? 'Unknown',
+      priority: issue?.fields?.priority?.name ?? 'Unknown',
+      url: `${this.baseUrl.replace(/\/+$/,'')}/browse/${issue.key}`
+    };
+  }
+
+  // Works for ADF or plain text
+  private extractDescription(desc: any): string {
+    if (!desc) return 'No description';
+    if (typeof desc === 'string') return desc.trim() || 'No description';
+
+    // ADF object: walk blocks and pull out text nodes
+    try {
+      if (Array.isArray(desc.content)) {
+        const parts: string[] = [];
+        const walk = (node: any) => {
+          if (!node) return;
+          if (node.type === 'text' && node.text) parts.push(node.text);
+          if (Array.isArray(node.content)) node.content.forEach(walk);
+        };
+        desc.content.forEach(walk);
+        const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+        return text || 'No description';
+      }
+    } catch { /* ignore and fall through */ }
+    return 'No description';
+  }
+}
 
 // Provider for "Files" view
 class FileItem extends vscode.TreeItem {
@@ -148,10 +269,22 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	// Add refresh Jira tickets command
+	context.subscriptions.push(
+		vscode.commands.registerCommand('codeSlice.refreshJiraTickets', async () => {
+			await sliceProvider.refreshJiraTickets();
+			vscode.window.showInformationMessage('Jira tickets refreshed!');
+		})
+	);
+
 	// Bridge messages from webview to handler
 	sliceProvider.onDidReceiveMessage(async (message) => {
 		if (message?.type === 'slice') {
 			await sliceAndNotify(filesProvider, testsProvider, docsProvider);
+		} else if (message?.type === 'openTicket') {
+			vscode.env.openExternal(vscode.Uri.parse(message.url));
+		} else if (message?.type === 'refreshTickets') {
+			await sliceProvider.refreshJiraTickets();
 		}
 	});
 }
@@ -247,6 +380,7 @@ class CodeSliceSidebarProvider implements vscode.WebviewViewProvider {
 	private _view?: vscode.WebviewView;
 	private _emitter = new vscode.EventEmitter<any>();
 	public readonly onDidReceiveMessage = this._emitter.event;
+	private _jiraTickets: JiraIssue[] = [];
 
 	constructor(private readonly _context: vscode.ExtensionContext) {}
 
@@ -260,6 +394,48 @@ class CodeSliceSidebarProvider implements vscode.WebviewViewProvider {
 
 		webviewView.webview.onDidReceiveMessage((message) => this._emitter.fire(message));
 		webviewView.webview.html = this.getHtml(webviewView.webview);
+
+		// Load Jira tickets on view creation
+		this.loadJiraTickets();
+	}
+
+	// Load Jira tickets from the service
+	private async loadJiraTickets() {
+  try {
+    const config = vscode.workspace.getConfiguration('codeslice.jira');
+    const baseUrl = config.get<string>('baseUrl');
+    const email = config.get<string>('email');
+    const apiToken = config.get<string>('apiToken');
+
+    console.log('Jira config:', { baseUrl: !!baseUrl, email: !!email, apiToken: !!apiToken });
+
+    if (!baseUrl || !email || !apiToken) {
+      console.log('Missing Jira configuration');
+      return; // This will show "No Jira tickets found" message
+    }
+
+    console.log('Attempting to fetch Jira tickets...');
+    const jiraService = new JiraService(baseUrl, email, apiToken);
+    this._jiraTickets = await jiraService.getCurrentUserIssues();
+    console.log(`Fetched ${this._jiraTickets.length} Jira tickets`);
+    this.updateWebview();
+  } catch (error) {
+    console.error('Failed to load Jira tickets:', error);
+    vscode.window.showErrorMessage(`Failed to load Jira tickets: ${error}`);
+    // Keep _jiraTickets empty to show "No tickets found" message
+  }
+}
+
+	// Update webview content with latest tickets
+  private updateWebview() {
+    if (this._view) {
+      this._view.webview.html = this.getHtml(this._view.webview);
+    }
+  }
+
+	// Add this method to CodeSliceSidebarProvider class
+	public async refreshJiraTickets() {
+		await this.loadJiraTickets();
 	}
 
 	private getHtml(webview: vscode.Webview): string {
@@ -270,6 +446,20 @@ class CodeSliceSidebarProvider implements vscode.WebviewViewProvider {
 			style-src 'nonce-${nonce}';
 			script-src 'nonce-${nonce}';
 		`.replace(/\s{2,}/g, ' ').trim();
+
+		const ticketsHtml = this._jiraTickets.length > 0
+			? this._jiraTickets.map(ticket => `
+				<div class="ticket-item" data-url="${ticket.url}">
+					<div class="ticket-header">
+						<span class="ticket-key">${ticket.key}</span>
+						<span class="ticket-type ${ticket.issueType.toLowerCase()}">${ticket.issueType}</span>
+					</div>
+					<div class="ticket-title">${ticket.summary}</div>
+            <div class="ticket-description">${ticket.description}</div>
+            <div class="ticket-status">Status: ${ticket.status}</div>
+          </div>
+				`).join('')
+			: '<div class="no-tickets">No Jira tickets found. Configure Jira integration in settings.</div>';
 
 		return `<!DOCTYPE html>
 			<html lang="en">
@@ -287,16 +477,104 @@ class CodeSliceSidebarProvider implements vscode.WebviewViewProvider {
 						border: none; padding: 6px 12px; cursor: pointer;
 					}
 					button:hover { background: var(--vscode-button-hoverBackground); }
+
+					.tickets-section {
+						border-top: 1px solid var(--vscode-panel-border);
+						padding-top: 16px;
+					}
+					.tickets-title {
+						font-weight: bold;
+						margin-bottom: 12px;
+						color: var(--vscode-foreground);
+					}
+					.ticket-item {
+						background: var(--vscode-editor-background);
+						border: 1px solid var(--vscode-panel-border);
+						border-radius: 4px;
+						padding: 10px;
+						margin-bottom: 8px;
+						cursor: pointer;
+						transition: background-color 0.1s;
+					}
+					.ticket-item:hover {
+						background: var(--vscode-list-hoverBackground);
+					}
+					.ticket-header {
+						display: flex;
+						justify-content: space-between;
+						align-items: center;
+						margin-bottom: 4px;
+					}
+					.ticket-key {
+						font-family: var(--vscode-editor-font-family);
+						font-size: 11px;
+						color: var(--vscode-textLink-foreground);
+						font-weight: bold;
+					}
+					.ticket-type {
+						font-size: 10px;
+						padding: 2px 6px;
+						border-radius: 10px;
+						text-transform: uppercase;
+						font-weight: bold;
+					}
+					.ticket-type.bug { background: #f14c4c; color: white; }
+					.ticket-type.story { background: #63ba3c; color: white; }
+					.ticket-type.task { background: #4a90e2; color: white; }
+					.ticket-type.epic { background: #904ee2; color: white; }
+					.ticket-type.feature { background: #f7931e; color: white; }
+					.ticket-title {
+						font-weight: 500;
+						margin-bottom: 4px;
+						line-height: 1.3;
+					}
+					.ticket-description {
+						font-size: 11px;
+						color: var(--vscode-descriptionForeground);
+						margin-bottom: 4px;
+						line-height: 1.2;
+					}
+					.ticket-status {
+						font-size: 10px;
+						color: var(--vscode-descriptionForeground);
+					}
+					.no-tickets {
+						color: var(--vscode-descriptionForeground);
+						font-style: italic;
+						text-align: center;
+						padding: 20px;
+					}
 				</style>
 			</head>
 			<body>
 				<div class="welcome">Welcome to CodeSlice! Click Slice to pick 5 random files from your workspace.</div>
 				<button id="sliceBtn" type="button">Slice</button>
+				<button id="refreshBtn" type="button">Refresh Tickets</button>
+
+				<div class="tickets-section">
+					<div class="tickets-title">My Jira Tickets</div>
+					<div id="tickets-container">
+						${ticketsHtml}
+					</div>
+				</div>
 
 				<script nonce="${nonce}">
 					const vscode = acquireVsCodeApi();
 					document.getElementById('sliceBtn')?.addEventListener('click', () => {
 						vscode.postMessage({ type: 'slice' });
+					});
+					document.getElementById('refreshBtn')?.addEventListener('click', () => {
+  vscode.postMessage({ type: 'refreshTickets' });
+});
+
+					// Handle ticket clicks
+					document.querySelectorAll('.ticket-item').forEach(item => {
+						item.addEventListener('click', () => {
+							const url = item.getAttribute('data-url');
+							if (url) {
+								vscode.postMessage({ type: 'openTicket', url: url });
+							}
+						});
 					});
 				</script>
 			</body>

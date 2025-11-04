@@ -53,8 +53,32 @@
       {
         "command": "codeSlice.slice",
         "title": "CodeSlice: Slice Code"
+      },
+      {
+        "command": "codeSlice.refreshJiraTickets",
+        "title": "CodeSlice: Refresh Jira Tickets"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "CodeSlice",
+      "properties": {
+        "codeslice.jira.baseUrl": {
+          "type": "string",
+          "description": "Jira base URL (e.g., https://yourcompany.atlassian.net)",
+          "default": ""
+        },
+        "codeslice.jira.email": {
+          "type": "string",
+          "description": "Your Jira email address",
+          "default": ""
+        },
+        "codeslice.jira.apiToken": {
+          "type": "string",
+          "description": "Your Jira API token (create at: Account Settings > Security > API tokens)",
+          "default": ""
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
