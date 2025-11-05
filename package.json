@@ -15,7 +15,8 @@
     "onView:codeSlice.tests",
     "onView:codeSlice.docs",
     "onView:codeSlice.sidebar",
-    "onCommand:codeSlice.slice"
+    "onCommand:codeSlice.slice",
+    "onCommand:codeSlice.refreshJiraTickets"
   ],
   "main": "./out/extension.js",
   "contributes": {
