@@ -162,5 +162,5 @@ codeslice/
 
 ## Security note
 
-- Your Jira API token is stored in VS Code settings. Treat it like a password.
+- Your Jira API token is stored in VS Code settings. Treat it like a password!
 - Consider removing the token from workspace settings if committing to source control; prefer user settings.
