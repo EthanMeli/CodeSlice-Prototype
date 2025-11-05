@@ -73,13 +73,17 @@ class JiraService {
 
       for (const issue of data.issues) {
         accumulated.push(this.transformIssue(issue));
-        if (accumulated.length >= maxToReturn) break;
+        if (accumulated.length >= maxToReturn) {
+					break;
+				}
       }
 
       // Stop if we've read all issues
       startAt = (data.startAt ?? startAt) + (data.maxResults ?? pageSize);
       const total = data.total ?? accumulated.length;
-      if (startAt >= total) break;
+      if (startAt >= total) {
+				break;
+			}
     }
 
     return accumulated;
@@ -103,17 +107,27 @@ class JiraService {
 
   // Works for ADF or plain text
   private extractDescription(desc: any): string {
-    if (!desc) return 'No description';
-    if (typeof desc === 'string') return desc.trim() || 'No description';
+    if (!desc) {
+			return 'No description';
+		}
+    if (typeof desc === 'string') {
+			return desc.trim() || 'No description';
+		}
 
     // ADF object: walk blocks and pull out text nodes
     try {
       if (Array.isArray(desc.content)) {
         const parts: string[] = [];
         const walk = (node: any) => {
-          if (!node) return;
-          if (node.type === 'text' && node.text) parts.push(node.text);
-          if (Array.isArray(node.content)) node.content.forEach(walk);
+          if (!node) {
+						return;
+					}
+          if (node.type === 'text' && node.text) {
+						parts.push(node.text);
+					}
+          if (Array.isArray(node.content)) {
+						node.content.forEach(walk);
+					}
         };
         desc.content.forEach(walk);
         const text = parts.join(' ').replace(/\s+/g, ' ').trim();
